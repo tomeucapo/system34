@@ -1,6 +1,6 @@
 // Control Processor 
 
-pub struct ControlProcessor
+pub struct Cp
 {
     sar: usize,             // Storage Address Register
     sdr: u16,               // Storage Data Register
@@ -10,14 +10,14 @@ pub struct ControlProcessor
     pcr: u16,               // Processor Condition Register       
     lsr:[char;64],          // Local Storage Register
 
-    storage:[u16; 16384]    // Main memory
+    msp: Msp,
 }
 
-impl ControlProcessor 
+impl Cp 
 {
-    pub fn new() -> ControlProcessor
+    pub fn new(msp: Msp) -> Cp
     {
-        ControlProcessor { sar: 0, sdr: 0, mor: 0, x: 0, y: 0, pcr: 0, lsr: ['\0'; 64], storage: [0; 16384] }
+        Cp { sar: 0, sdr: 0, mor: 0, x: 0, y: 0, pcr: 0, lsr: ['\0'; 64], msp }
     }
 
     fn execute_instruction(&mut self, instr: u16) 
