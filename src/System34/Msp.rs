@@ -1,13 +1,9 @@
 // Main Storage Processor 
 
-struct LPMR 
-{
-    opcode: u8,
-    qbyte: u8,
-    rbyte: u8
-}
+//use std::{cell::RefCell, rc::Rc};
+use super::memory;
 
-pub struct Msp
+pub struct msp
 {
     msar: usize,            // Storage Address Register
  
@@ -20,33 +16,69 @@ pub struct Msp
     sbr: [u8; 4],           // Status Byte Registers
     ccr: u8,                // Configuration Control Register (8-bit)
     acr: u32,               // Address Compare Register (17-bit) 
-
-    memory: Memory,
+    iar: usize,             // Instruction Address Register
+    lsr: u8,            
+    memory: memory::memory
 }
 
-impl Msp 
+impl msp 
 {
-    pub fn new(memSize: usize) -> Msp
+    pub fn new(mem: memory::memory) -> msp
     {
-        Msp { 
-            msar: 0, 
+        msp { 
+            msar: 0,
+            iar: 0, 
+            lsr: 0,
             acr: 0, 
             ccr:0, 
             opreg: 0, 
             x: 0,
             y: 0,
+            psr: 0,
             q: 0,
-            memory: Memory::new(memSize) 
+            sbr: [0; 4],
+            memory: mem,
+            qbackup: 0 
         }
     }
 
-    fn execute_instruction(&mut self, instr: u16) 
-    {
-       
+    
+    fn execute_instruction(&mut self)
+    {   
+           /* 
+            match self.opreg {
+                0xc2 =>
+                0xd2 =>
+                0xe2 =>
+                _ => Some();
+            }
+            */
     }
 
-    pub fn run()
+    pub fn run(&mut self)
     {
+        while true 
+        {
+            self.msar = self.iar;            
+            self.iar += 1;
+            self.opreg = memory::memory::read(&self.memory, self.msar);
+            self.lsr = self.opreg;
+            self.msar = self.iar;
+            self.iar += 1;
+            self.q = memory::memory::read(&self.memory, self.msar);
+            self.qbackup = self.q;
+            //self.q = self.lsr;
+            self.y = 1;
+            match self.opreg {
+                0xc2 | 0xd2 | 0xe2 | 0xc0 | 0xd0 | 0xe0 | 0xf2 => self.execute_instruction(),
+                _ => {
+                    self.msar = self.iar;
+                    self.iar += 1;
+                    // Executable instruction?
 
+                }
+            }
+        }
     }
+
 }

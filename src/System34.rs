@@ -1,18 +1,25 @@
-mod Msp;
-mod Cp;
+mod msp;
+mod cp;
+pub mod memory;
 
-struct System34
+pub struct system34
 {
-    msp: Msp,
-    csp: Cp
+    msp: msp::msp,
+    csp: cp::cp
 }
 
-impl System34
+impl system34
 {
-    fn new(memSize: usize) -> System34
+    pub fn new(mem: memory::memory) -> system34
     {
-        let msp = Msp::new(memSize);
-        let csp = Cp::new(msp);
-        System34 { msp, csp }
+        system34 { 
+            msp: msp::msp::new(mem.into()),
+            csp: cp::cp::new()
+        }
+    }
+
+    pub fn run(&mut self)
+    {
+        msp::msp::run(&mut self.msp);
     }
 }
