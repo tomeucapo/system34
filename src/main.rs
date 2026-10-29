@@ -1,10 +1,11 @@
-mod system34;
+use system34::{memory::Memory, System34};
 
 fn main() {
-    let mem = system34::memory::memory::new(32);
-    let mut system34 = system34::system34::new(mem);
+    let memory = Memory::new(48);
+    let machine = System34::new(memory);
 
-    system34.run();
-
-    println!("Hello, System/34!");
+    println!(
+        "IBM System/34 initialized with {} bytes of main storage",
+        machine.memory().len()
+    );
 }
