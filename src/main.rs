@@ -1,15 +1,29 @@
 use std::error::Error;
 use std::ffi::OsString;
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 
-use system34::{memory::Memory, OperatorConsole, System34, TerminalEmulator, TerminalKey};
+use system34::{
+    memory::Memory, DisketteError, ImdImage, IplError, IplState, OperatorConsole, System34,
+    TerminalEmulator, TerminalKey,
+};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let memory = Memory::new(48);
     let mut machine = System34::new(memory);
 
-    match std::env::args_os().nth(1) {
+    let mut arguments = std::env::args_os().skip(1);
+    match arguments.next() {
         Some(argument) if argument == "--terminal-demo" => terminal_demo()?,
+        Some(argument) if argument == "--inspect-csipl" => {
+            let paths: Vec<_> = arguments.collect();
+            if paths.is_empty() {
+                return Err("Usage: system34 --inspect-csipl image.IMD [image2.IMD ...]".into());
+            }
+            for path in paths {
+                inspect_csipl(path)?;
+            }
+        }
         Some(path) => inspect_diskette(&mut machine, path)?,
         None => println!(
             "IBM System/34 initialized with {} bytes of main storage",
@@ -18,6 +32,79 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn inspect_csipl(path: OsString) -> Result<(), Box<dyn Error>> {
+    let mut machine = System34::new(Memory::new(48));
+    machine.mount_diskette_imd_file(&path)?;
+    let image = machine
+        .diskette_controller()
+        .image()
+        .expect("image was just mounted");
+    let path_display = Path::new(&path).display();
+
+    print!(
+        "{}: {} tracks, {} sectors; ",
+        path_display,
+        image.tracks().len(),
+        image.sector_count()
+    );
+    let large_sectors = four_kib_sectors(image);
+    match machine.load_csipl_bootstrap_from_diskette() {
+        Ok(IplState::CsiplBootstrapLoaded { bytes, words }) => println!(
+            "C0/H0/R1 contains a {bytes}-byte CSIPL-sized record ({words} words), not deleted and no CRC error; contents not validated"
+        ),
+        Ok(IplState::NotStarted) => println!("CSIPL bootstrap was not loaded"),
+        Err(IplError::DeletedBootstrapRecord) => {
+            println!("C0/H0/R1 exists but is marked deleted; not a valid CSIPL candidate")
+        }
+        Err(IplError::InvalidBootstrapSize { expected, actual }) => println!(
+            "C0/H0/R1 is {actual} bytes (CSIPL requires {expected}); not a valid CSIPL candidate"
+        ),
+        Err(IplError::Diskette(DisketteError::SectorUnavailable { .. })) => println!(
+            "C0/H0/R1 is marked unavailable in this IMD image; its payload was not captured, so the source disk's CSIPL contents are unknown"
+        ),
+        Err(error) => println!("no usable CSIPL bootstrap at C0/H0/R1: {error}"),
+    }
+    if large_sectors.is_empty() {
+        println!("  No 4-KiB sectors found in the image.");
+    } else {
+        println!("  4-KiB sectors: {}", large_sectors.join(", "));
+    }
+    Ok(())
+}
+
+fn four_kib_sectors(image: &ImdImage) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for track in image.tracks() {
+        for sector_id in &track.sector_ids {
+            let Some(sector) = image.sector(track.cylinder, track.head, *sector_id) else {
+                continue;
+            };
+            if sector.size != 4096 {
+                continue;
+            }
+            let status = match (sector.data.is_some(), sector.deleted, sector.crc_error) {
+                (false, _, _) => "unavailable",
+                (true, true, true) => "deleted + CRC error",
+                (true, true, false) => "deleted",
+                (true, false, true) => "CRC error",
+                (true, false, false) => "data present",
+            };
+            let modulation = if track.mode <= 2 { "FM" } else { "MFM" };
+            candidates.push(format!(
+                "C{:02}/H{}/R{} ({} bytes, {} mode {}, IMD type {}, {status})",
+                sector.cylinder,
+                sector.head,
+                sector.id,
+                sector.size,
+                modulation,
+                track.mode,
+                sector.record_type
+            ));
+        }
+    }
+    candidates
 }
 
 fn terminal_demo() -> Result<(), Box<dyn Error>> {

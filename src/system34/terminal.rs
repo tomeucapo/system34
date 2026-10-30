@@ -2,9 +2,10 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 
 /// Screen size of the directly attached 5251 console models.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DisplayStationModel {
     Model1,
+    #[default]
     Model11,
 }
 
@@ -18,12 +19,6 @@ impl DisplayStationModel {
 
     pub const fn columns(self) -> usize {
         80
-    }
-}
-
-impl Default for DisplayStationModel {
-    fn default() -> Self {
-        Self::Model11
     }
 }
 

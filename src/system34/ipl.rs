@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
+use super::channel::ChannelError;
 use super::cp::{ControlProcessor, ControlStorageError, CSIPL_BOOTSTRAP_BYTES};
 use super::diskette::{DisketteController, DisketteError};
 
@@ -8,6 +9,8 @@ use super::diskette::{DisketteController, DisketteError};
 pub enum IplState {
     #[default]
     NotStarted,
+    /// A cycle-steal transfer of the bootstrap record is in progress.
+    CsiplTransferInProgress { transferred: usize, total: usize },
     /// The CSIPL bootstrap block has been copied into CP control storage.
     /// Executing it requires the Control Processor microinstruction engine.
     CsiplBootstrapLoaded { bytes: usize, words: usize },
@@ -19,6 +22,7 @@ pub enum IplError {
     DeletedBootstrapRecord,
     InvalidBootstrapSize { expected: usize, actual: usize },
     ControlStorage(ControlStorageError),
+    Channel(ChannelError),
 }
 
 impl fmt::Display for IplError {
@@ -33,6 +37,7 @@ impl fmt::Display for IplError {
                 "the CSIPL bootstrap sector must be {expected} bytes, got {actual}"
             ),
             Self::ControlStorage(error) => write!(f, "{error}"),
+            Self::Channel(error) => write!(f, "{error}"),
         }
     }
 }
@@ -42,6 +47,7 @@ impl Error for IplError {
         match self {
             Self::Diskette(error) => Some(error),
             Self::ControlStorage(error) => Some(error),
+            Self::Channel(error) => Some(error),
             _ => None,
         }
     }
@@ -59,12 +65,28 @@ impl From<ControlStorageError> for IplError {
     }
 }
 
+impl From<ChannelError> for IplError {
+    fn from(error: ChannelError) -> Self {
+        Self::Channel(error)
+    }
+}
+
 /// Performs the first diskette CSIPL transfer: the 4,096-byte record at
 /// physical C0/H0/R1 is copied as 2,048 big-endian words into control storage.
 pub fn load_csipl_bootstrap(
     diskette: &mut DisketteController,
     cp: &mut ControlProcessor,
 ) -> Result<IplState, IplError> {
+    let bytes = read_csipl_bootstrap(diskette)?;
+    cp.load_csipl_bootstrap(&bytes)?;
+    Ok(IplState::CsiplBootstrapLoaded {
+        bytes: CSIPL_BOOTSTRAP_BYTES,
+        words: CSIPL_BOOTSTRAP_BYTES / 2,
+    })
+}
+
+/// Reads and validates the diagnostic CSIPL record at physical C0/H0/R1.
+pub fn read_csipl_bootstrap(diskette: &mut DisketteController) -> Result<Vec<u8>, IplError> {
     let record = diskette.read_sector(0, 0, 1)?;
     if record.deleted {
         return Err(IplError::DeletedBootstrapRecord);
@@ -83,11 +105,7 @@ pub fn load_csipl_bootstrap(
         });
     }
 
-    cp.load_csipl_bootstrap(data)?;
-    Ok(IplState::CsiplBootstrapLoaded {
-        bytes: CSIPL_BOOTSTRAP_BYTES,
-        words: CSIPL_BOOTSTRAP_BYTES / 2,
-    })
+    Ok(data.to_vec())
 }
 
 #[cfg(test)]

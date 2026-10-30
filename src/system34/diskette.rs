@@ -521,9 +521,9 @@ mod tests {
         for cylinder in 1..=2 {
             bytes.extend_from_slice(&[0, cylinder, 0, 2, 0, 1, 2]);
             bytes.push(1);
-            bytes.extend_from_slice(&vec![0x10 + cylinder; 128]);
+            bytes.extend_from_slice(&[0x10 + cylinder; 128]);
             bytes.push(1);
-            bytes.extend_from_slice(&vec![0x20 + cylinder; 128]);
+            bytes.extend_from_slice(&[0x20 + cylinder; 128]);
         }
         let mut controller = DisketteController::default();
         controller.mount_imd(&bytes).unwrap();

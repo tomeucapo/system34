@@ -19,7 +19,7 @@ pub struct ControlProcessor {
     pub lsr: [u8; 64],
     pub control_storage: Vec<u16>,
     pub csipl_words_loaded: usize,
-    pending_interrupt: Option<u8>,
+    pending_interrupts: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,12 +52,18 @@ impl Default for ControlProcessor {
             lsr: [0; 64],
             control_storage: vec![0; CONTROL_STORAGE_WORDS],
             csipl_words_loaded: 0,
-            pending_interrupt: None,
+            pending_interrupts: 0,
         }
     }
 }
 
 impl ControlProcessor {
+    pub fn begin_csipl_transfer(&mut self) {
+        self.control_storage.fill(0);
+        self.csipl_words_loaded = 0;
+        self.sar = 0;
+    }
+
     /// Loads the first 2K 16-bit control-storage words transferred by CSIPL.
     pub fn load_csipl_bootstrap(&mut self, bytes: &[u8]) -> Result<(), ControlStorageError> {
         if bytes.len() != CSIPL_BOOTSTRAP_BYTES {
@@ -67,7 +73,7 @@ impl ControlProcessor {
             });
         }
 
-        self.control_storage.fill(0);
+        self.begin_csipl_transfer();
         let (words, _) = bytes.as_chunks::<2>();
         for (word, pair) in self.control_storage[..CSIPL_BOOTSTRAP_BYTES / 2]
             .iter_mut()
@@ -81,14 +87,19 @@ impl ControlProcessor {
     }
 
     pub fn request_interrupt(&mut self, level: u8) {
-        self.pending_interrupt = Some(level);
+        if level < u8::BITS as u8 {
+            self.pending_interrupts |= 1 << level;
+        }
     }
 
     pub fn pending_interrupt(&self) -> Option<u8> {
-        self.pending_interrupt
+        (self.pending_interrupts != 0)
+            .then(|| self.pending_interrupts.trailing_zeros() as u8)
     }
 
     pub fn acknowledge_interrupt(&mut self) -> Option<u8> {
-        self.pending_interrupt.take()
+        let level = self.pending_interrupt()?;
+        self.pending_interrupts &= !(1 << level);
+        Some(level)
     }
 }
