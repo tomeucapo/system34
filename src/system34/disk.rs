@@ -13,6 +13,12 @@ pub struct DiskGeometry {
 }
 
 impl DiskGeometry {
+    /// 62EH fixed-disk geometry. Supply the cylinder count for the installed
+    /// capacity; the attachment has three heads with 60 256-byte sectors each.
+    pub fn system34_62eh(cylinders: u16) -> Result<Self, FixedDiskError> {
+        Self::new(cylinders, 3, 60, 256)
+    }
+
     pub fn new(
         cylinders: u16,
         heads: u8,
@@ -58,6 +64,7 @@ pub enum FixedDiskError {
     ImageSizeMismatch { expected: usize, actual: usize },
     AddressOutOfRange { cylinder: u16, head: u8, sector: u8 },
     SectorSizeMismatch { expected: usize, actual: usize },
+    ByteRangeOutOfRange { start: usize, length: usize },
     NoDiskMounted,
     Io(String),
 }
@@ -80,6 +87,11 @@ impl fmt::Display for FixedDiskError {
             Self::SectorSizeMismatch { expected, actual } => {
                 write!(f, "disk sector must be {expected} bytes, got {actual}")
             }
+            Self::ByteRangeOutOfRange { start, length } => write!(
+                f,
+                "fixed-disk byte range {start:#x}..{:#x} is outside the image",
+                start.saturating_add(*length)
+            ),
             Self::NoDiskMounted => write!(f, "no fixed-disk image is mounted"),
             Self::Io(message) => write!(f, "could not read fixed-disk image: {message}"),
         }
@@ -137,16 +149,38 @@ impl FixedDiskImage {
         head: u8,
         sector: u8,
     ) -> Result<&[u8], FixedDiskError> {
-        let offset = self
-            .geometry
-            .sector_offset(cylinder, head, sector)
-            .ok_or(FixedDiskError::AddressOutOfRange {
+        let offset = self.geometry.sector_offset(cylinder, head, sector).ok_or(
+            FixedDiskError::AddressOutOfRange {
                 cylinder,
                 head,
                 sector,
-            })?;
+            },
+        )?;
         let size = self.geometry.bytes_per_sector as usize;
         Ok(&self.data[offset..offset + size])
+    }
+
+    /// Reads a contiguous byte range starting at the addressed sector. This is
+    /// useful for transferring a raw main-storage image spanning sectors.
+    pub fn read_bytes_from(
+        &self,
+        cylinder: u16,
+        head: u8,
+        sector: u8,
+        length: usize,
+    ) -> Result<&[u8], FixedDiskError> {
+        let start = self.geometry.sector_offset(cylinder, head, sector).ok_or(
+            FixedDiskError::AddressOutOfRange {
+                cylinder,
+                head,
+                sector,
+            },
+        )?;
+        let end = start
+            .checked_add(length)
+            .filter(|&end| end <= self.data.len())
+            .ok_or(FixedDiskError::ByteRangeOutOfRange { start, length })?;
+        Ok(&self.data[start..end])
     }
 
     pub fn write_sector(
@@ -163,14 +197,13 @@ impl FixedDiskImage {
                 actual: bytes.len(),
             });
         }
-        let offset = self
-            .geometry
-            .sector_offset(cylinder, head, sector)
-            .ok_or(FixedDiskError::AddressOutOfRange {
+        let offset = self.geometry.sector_offset(cylinder, head, sector).ok_or(
+            FixedDiskError::AddressOutOfRange {
                 cylinder,
                 head,
                 sector,
-            })?;
+            },
+        )?;
         self.data[offset..offset + expected].copy_from_slice(bytes);
         Ok(())
     }
@@ -218,6 +251,19 @@ impl FixedDiskController {
             .as_ref()
             .ok_or(FixedDiskError::NoDiskMounted)?
             .read_sector(cylinder, head, sector)
+    }
+
+    pub fn read_bytes_from(
+        &self,
+        cylinder: u16,
+        head: u8,
+        sector: u8,
+        length: usize,
+    ) -> Result<&[u8], FixedDiskError> {
+        self.image
+            .as_ref()
+            .ok_or(FixedDiskError::NoDiskMounted)?
+            .read_bytes_from(cylinder, head, sector, length)
     }
 
     pub fn write_sector(
@@ -269,5 +315,13 @@ mod tests {
         controller.mount(FixedDiskImage::blank(geometry).unwrap());
         controller.write_sector(0, 0, 1, &[0x5a; 128]).unwrap();
         assert_eq!(controller.read_sector(0, 0, 1).unwrap(), &[0x5a; 128]);
+    }
+
+    #[test]
+    fn system34_62eh_uses_documented_sector_geometry() {
+        let geometry = DiskGeometry::system34_62eh(303).unwrap();
+        assert_eq!(geometry.heads, 3);
+        assert_eq!(geometry.sectors_per_track, 60);
+        assert_eq!(geometry.bytes_per_sector, 256);
     }
 }

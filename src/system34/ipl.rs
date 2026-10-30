@@ -3,6 +3,7 @@ use std::fmt;
 
 use super::channel::ChannelError;
 use super::cp::{ControlProcessor, ControlStorageError, CSIPL_BOOTSTRAP_BYTES};
+use super::disk::FixedDiskError;
 use super::diskette::{DisketteController, DisketteError};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -14,15 +15,38 @@ pub enum IplState {
     /// The CSIPL bootstrap block has been copied into CP control storage.
     /// Executing it requires the Control Processor microinstruction engine.
     CsiplBootstrapLoaded { bytes: usize, words: usize },
+    /// A raw program image is being transferred to main storage from fixed disk.
+    MainStorageTransferInProgress {
+        transferred: usize,
+        total: usize,
+        load_address: usize,
+        entry_point: u32,
+    },
+    /// A raw program image has been copied to main storage and the MSP is ready
+    /// to execute it. This state does not imply that SSP/MSIPL file lookup ran.
+    MainStorageProgramLoaded {
+        bytes: usize,
+        load_address: usize,
+        entry_point: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IplError {
     Diskette(DisketteError),
     DeletedBootstrapRecord,
-    InvalidBootstrapSize { expected: usize, actual: usize },
+    InvalidBootstrapSize {
+        expected: usize,
+        actual: usize,
+    },
     ControlStorage(ControlStorageError),
     Channel(ChannelError),
+    FixedDisk(FixedDiskError),
+    InvalidMainStorageRange {
+        load_address: usize,
+        length: usize,
+        storage_size: usize,
+    },
 }
 
 impl fmt::Display for IplError {
@@ -38,6 +62,16 @@ impl fmt::Display for IplError {
             ),
             Self::ControlStorage(error) => write!(f, "{error}"),
             Self::Channel(error) => write!(f, "{error}"),
+            Self::FixedDisk(error) => write!(f, "{error}"),
+            Self::InvalidMainStorageRange {
+                load_address,
+                length,
+                storage_size,
+            } => write!(
+                f,
+                "main-storage load {load_address:#x}..{:#x} exceeds {storage_size} bytes",
+                load_address.saturating_add(*length)
+            ),
         }
     }
 }
@@ -48,6 +82,7 @@ impl Error for IplError {
             Self::Diskette(error) => Some(error),
             Self::ControlStorage(error) => Some(error),
             Self::Channel(error) => Some(error),
+            Self::FixedDisk(error) => Some(error),
             _ => None,
         }
     }
@@ -68,6 +103,12 @@ impl From<ControlStorageError> for IplError {
 impl From<ChannelError> for IplError {
     fn from(error: ChannelError) -> Self {
         Self::Channel(error)
+    }
+}
+
+impl From<FixedDiskError> for IplError {
+    fn from(error: FixedDiskError) -> Self {
+        Self::FixedDisk(error)
     }
 }
 

@@ -55,6 +55,20 @@ attention and check indicators. This is a logical workstation-link simulation;
 it does not model physical Twinax signaling or timing. Controls in the window
 can send display text and keyboard events in either direction.
 
+The GUI opens a separate graphical window for the 5340 operator/CE control panel modeled on
+IBM's panel layout: Power and Load controls, status lamps, Start/Stop/CE Start,
+Reset, Lamp Test, the CE mode selector, interactive hex selector dials, and the
+Display/Data readout. The panel is drawn in egui using a physical System/34
+console as a visual reference; it exposes MSP and CP registers. `PROC RUN` executes the
+MSP continuously; `SYS INSN STEP` advances one MSP instruction; the CP step
+modes execute one supported CP microinstruction. `ALTER STOR`, `ALTER MAR`, and
+`DPLY STOR` use the switch values to modify or inspect storage and the CP MAR.
+The CE plate is arranged beside the registers and the operator panel, with the
+controls sized to fit together in the separate panel window without scrolling.
+The interface starts at 150% zoom. Use the scale slider in the control panel,
+the `A+`/`A−`/`100%` buttons in the main window, or Ctrl + Plus/Minus/0 to adjust
+the UI size.
+
 Try the standalone local console and type a few lines with:
 
 ```sh
@@ -64,13 +78,14 @@ cargo run -- --terminal-demo
 Enter `/quit` to leave the demo. It exercises the 5251 screen, ANSI renderer,
 and keyboard-input decoder without requiring an IPL image.
 
-The CSIPL bootstrap is loaded but not executed yet: Control Processor
-microinstructions and the channel/cycle-steal I/O protocol are still needed to
-continue CSIPL, perform MSIPL, and connect running programs to the operator
-console. The virtual Twinax bus is not yet wired to the Control Processor's
-workstation attachment. Cycle-accurate Twinax/diskette timing, address
-translation/protection, and optional scientific microinstructions are also
-not implemented. Unsupported opcodes and invalid data accesses return
+The CSIPL bytes can be loaded into control storage; the CP now executes a
+supported subset of microinstructions, and the channel supports cycle-steal I/O.
+Full CP-driven CSIPL/MSIPL is not yet implemented. Fixed-disk program loading
+requires explicit CHS, length, load address, and entry point values; it does not
+parse SSP directories or module headers. The virtual Twinax console requests CP
+interrupts for keyboard input, but Twinax/diskette timing is not cycle-accurate.
+Address translation/protection and optional scientific microinstructions are
+also not implemented. Unsupported instructions and invalid data accesses return
 structured errors.
 
 Implementation references:

@@ -1,5 +1,5 @@
-pub mod cp;
 pub mod channel;
+pub mod cp;
 pub mod disk;
 pub mod diskette;
 pub mod ipl;
@@ -9,8 +9,8 @@ pub mod msp;
 pub mod terminal;
 pub mod twinax;
 
-use self::cp::ControlProcessor;
 use self::channel::{ChannelTarget, CycleStealProgress, IoChannel};
+use self::cp::ControlProcessor;
 use self::disk::{DiskGeometry, FixedDiskController, FixedDiskError};
 use self::diskette::{DisketteController, DisketteError};
 use self::ipl::{IplError, IplState};
@@ -68,6 +68,21 @@ impl System34 {
         &self.cp
     }
 
+    pub fn cp_mut(&mut self) -> &mut ControlProcessor {
+        &mut self.cp
+    }
+
+    /// Fetches one control-store word through the CP's main-level MAR without
+    /// executing it, for diagnostics and control-store inspection.
+    pub fn fetch_control_store_word(&mut self) -> Result<(u16, u16), cp::ControlStorageError> {
+        self.cp.fetch_microinstruction()
+    }
+
+    /// Fetches and executes one supported CP microinstruction.
+    pub fn step_control_processor(&mut self) -> Result<cp::CpStepOutcome, cp::ControlStorageError> {
+        self.cp.step_microinstruction()
+    }
+
     pub fn io_channel(&self) -> &IoChannel {
         &self.channel
     }
@@ -85,6 +100,28 @@ impl System34 {
                 IplState::CsiplTransferInProgress {
                     transferred: progress.transferred,
                     total: progress.total,
+                }
+            };
+        } else if let IplState::MainStorageTransferInProgress {
+            total,
+            load_address,
+            entry_point,
+            ..
+        } = self.ipl_state
+        {
+            self.ipl_state = if progress.complete {
+                self.msp.reset(entry_point);
+                IplState::MainStorageProgramLoaded {
+                    bytes: total,
+                    load_address,
+                    entry_point,
+                }
+            } else {
+                IplState::MainStorageTransferInProgress {
+                    transferred: progress.transferred,
+                    total,
+                    load_address,
+                    entry_point,
                 }
             };
         }
@@ -167,6 +204,120 @@ impl System34 {
         self.diskette.mount_imd_file(path)
     }
 
+    /// Starts a diskette-to-main-storage read serviced one byte per
+    /// `cycle_steal` call.
+    pub fn start_diskette_read(
+        &mut self,
+        cylinder: u8,
+        head: u8,
+        sector: u8,
+        destination: usize,
+    ) -> Result<(), channel::ChannelError> {
+        let record = self.diskette.read_sector(cylinder, head, sector)?;
+        let bytes = record
+            .data()
+            .ok_or(DisketteError::SectorUnavailable {
+                cylinder,
+                head,
+                sector,
+            })?
+            .to_vec();
+        self.channel.start_cycle_steal(
+            bytes,
+            ChannelTarget::MainStorage {
+                byte_address: destination,
+            },
+        )
+    }
+
+    /// Starts a fixed-disk-to-main-storage read serviced one byte per
+    /// `cycle_steal` call.
+    pub fn start_fixed_disk_read(
+        &mut self,
+        cylinder: u16,
+        head: u8,
+        sector: u8,
+        destination: usize,
+    ) -> Result<(), channel::ChannelError> {
+        let bytes = self
+            .fixed_disk
+            .read_sector(cylinder, head, sector)?
+            .to_vec();
+        self.channel.start_cycle_steal(
+            bytes,
+            ChannelTarget::MainStorage {
+                byte_address: destination,
+            },
+        )
+    }
+
+    /// Starts an explicitly addressed raw program transfer from the fixed disk
+    /// into main storage. This is a low-level loader primitive; the SSP directory,
+    /// module header and normal CP-driven MSIPL sequence are not decoded here.
+    pub fn begin_main_storage_program_load(
+        &mut self,
+        cylinder: u16,
+        head: u8,
+        sector: u8,
+        length: usize,
+        load_address: usize,
+        entry_point: u32,
+    ) -> Result<IplState, IplError> {
+        let end = load_address
+            .checked_add(length)
+            .filter(|&end| end <= self.memory.len());
+        if length == 0 || end.is_none() {
+            return Err(IplError::InvalidMainStorageRange {
+                load_address,
+                length,
+                storage_size: self.memory.len(),
+            });
+        }
+
+        let bytes = self
+            .fixed_disk
+            .read_bytes_from(cylinder, head, sector, length)?
+            .to_vec();
+        self.channel.start_cycle_steal(
+            bytes,
+            ChannelTarget::MainStorage {
+                byte_address: load_address,
+            },
+        )?;
+        self.ipl_state = IplState::MainStorageTransferInProgress {
+            transferred: 0,
+            total: length,
+            load_address,
+            entry_point,
+        };
+        Ok(self.ipl_state)
+    }
+
+    /// Completes an explicitly addressed raw fixed-disk program transfer.
+    /// This is useful for testing programs after MSIPL has selected an image.
+    pub fn load_main_storage_program_from_fixed_disk(
+        &mut self,
+        cylinder: u16,
+        head: u8,
+        sector: u8,
+        length: usize,
+        load_address: usize,
+        entry_point: u32,
+    ) -> Result<IplState, IplError> {
+        self.begin_main_storage_program_load(
+            cylinder,
+            head,
+            sector,
+            length,
+            load_address,
+            entry_point,
+        )?;
+        while self.channel.is_busy() {
+            self.cycle_steal()?;
+        }
+        Ok(self.ipl_state)
+    }
+
     pub fn ipl_state(&self) -> IplState {
         self.ipl_state
     }
@@ -185,10 +336,8 @@ impl System34 {
     /// Starts a byte-wise cycle-steal transfer of the diagnostic CSIPL block.
     pub fn begin_csipl_bootstrap_from_diskette(&mut self) -> Result<IplState, IplError> {
         let bytes = ipl::read_csipl_bootstrap(&mut self.diskette)?;
-        self.channel.start_cycle_steal(
-            bytes,
-            ChannelTarget::ControlStorage { byte_address: 0 },
-        )?;
+        self.channel
+            .start_cycle_steal(bytes, ChannelTarget::ControlStorage { byte_address: 0 })?;
         self.cp.begin_csipl_transfer();
         let total = self
             .channel
@@ -239,9 +388,7 @@ impl System34 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ipl::IplState, memory::Memory, msp::StepOutcome, terminal::TerminalKey, System34,
-    };
+    use super::{ipl::IplState, memory::Memory, msp::StepOutcome, terminal::TerminalKey, System34};
 
     #[test]
     fn machine_executes_a_valid_noop_register_instruction() {
@@ -276,6 +423,8 @@ mod tests {
             })
         );
         assert_eq!(machine.cp().control_storage[0], 0xa5a5);
+        assert_eq!(machine.fetch_control_store_word(), Ok((0, 0xa5a5)));
+        assert_eq!(machine.cp().microaddress(), 1);
     }
 
     #[test]
@@ -283,7 +432,10 @@ mod tests {
         let mut machine = System34::new(Memory::new(48));
 
         assert!(machine.write_operator_display("HELLO"));
-        assert_eq!(&machine.operator_console().screen()[0][..5], "HELLO");
+        assert_eq!(
+            &machine.operator_console().screen()[0][..5],
+            &['H', 'E', 'L', 'L', 'O']
+        );
         assert_eq!(machine.virtual_twinax_bus().host_bytes_sent(), 5);
 
         assert!(machine.receive_operator_keys(&[TerminalKey::Character('A')]));
@@ -336,5 +488,66 @@ mod tests {
             }
         );
         assert_eq!(machine.cp().control_storage[2047], 0x5a5a);
+    }
+
+    #[test]
+    fn diskette_reads_use_the_channel_cycle_steal_path() {
+        let mut image = b"IMD channel fixture\x1a".to_vec();
+        image.extend_from_slice(&[0, 1, 0, 1, 0, 1, 1]);
+        image.extend(std::iter::repeat_n(0x3c, 128));
+        let mut machine = System34::new(Memory::new(48));
+        machine.mount_diskette_imd(&image).unwrap();
+
+        machine.start_diskette_read(1, 0, 1, 0x100).unwrap();
+        assert_eq!(machine.memory().read(0x100), Ok(0));
+        machine.cycle_steal().unwrap();
+        assert_eq!(machine.memory().read(0x100), Ok(0x3c));
+        while machine.io_channel().is_busy() {
+            machine.cycle_steal().unwrap();
+        }
+        assert_eq!(machine.memory().read(0x17f), Ok(0x3c));
+    }
+
+    #[test]
+    fn fixed_disk_reads_use_the_channel_cycle_steal_path() {
+        use super::disk::{DiskGeometry, FixedDiskImage};
+
+        let geometry = DiskGeometry::new(1, 1, 2, 128).unwrap();
+        let mut image = FixedDiskImage::blank(geometry).unwrap();
+        image.write_sector(0, 0, 1, &[0xa7; 128]).unwrap();
+        let mut machine = System34::new(Memory::new(48));
+        machine.fixed_disk_controller_mut().mount(image);
+
+        machine.start_fixed_disk_read(0, 0, 1, 0x200).unwrap();
+        while machine.io_channel().is_busy() {
+            machine.cycle_steal().unwrap();
+        }
+        assert_eq!(machine.memory().read(0x200), Ok(0xa7));
+        assert_eq!(machine.memory().read(0x27f), Ok(0xa7));
+    }
+
+    #[test]
+    fn raw_fixed_disk_program_load_places_bytes_and_sets_the_msp_entry_point() {
+        use super::disk::{DiskGeometry, FixedDiskImage};
+
+        let geometry = DiskGeometry::new(1, 1, 2, 128).unwrap();
+        let mut image = FixedDiskImage::blank(geometry).unwrap();
+        let mut boot_sector = [0; 128];
+        boot_sector[..4].copy_from_slice(&[0x34, 0, 0, 0]);
+        image.write_sector(0, 0, 0, &boot_sector).unwrap();
+        let mut machine = System34::new(Memory::new(48));
+        machine.fixed_disk_controller_mut().mount(image);
+
+        assert_eq!(
+            machine.load_main_storage_program_from_fixed_disk(0, 0, 0, 4, 0, 0),
+            Ok(IplState::MainStorageProgramLoaded {
+                bytes: 4,
+                load_address: 0,
+                entry_point: 0,
+            })
+        );
+        assert_eq!(machine.memory().read(0), Ok(0x34));
+        assert_eq!(machine.msp().registers.iar, 0);
+        assert_eq!(machine.run_for(1), Ok(1));
     }
 }

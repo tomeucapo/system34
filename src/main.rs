@@ -55,6 +55,19 @@ fn inspect_csipl(path: OsString) -> Result<(), Box<dyn Error>> {
             "C0/H0/R1 contains a {bytes}-byte CSIPL-sized record ({words} words), not deleted and no CRC error; contents not validated"
         ),
         Ok(IplState::NotStarted) => println!("CSIPL bootstrap was not loaded"),
+        Ok(IplState::CsiplTransferInProgress {
+            transferred, total, ..
+        }) => println!("CSIPL transfer is in progress ({transferred}/{total} bytes)"),
+        Ok(IplState::MainStorageTransferInProgress {
+            transferred, total, ..
+        }) => println!("main-storage transfer is in progress ({transferred}/{total} bytes)"),
+        Ok(IplState::MainStorageProgramLoaded {
+            bytes,
+            load_address,
+            entry_point,
+        }) => println!(
+            "loaded {bytes} raw program bytes at {load_address:#x}, entry point {entry_point:#x}"
+        ),
         Err(IplError::DeletedBootstrapRecord) => {
             println!("C0/H0/R1 exists but is marked deleted; not a valid CSIPL candidate")
         }

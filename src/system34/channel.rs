@@ -2,6 +2,8 @@ use std::error::Error;
 use std::fmt;
 
 use super::cp::ControlProcessor;
+use super::disk::FixedDiskError;
+use super::diskette::DisketteError;
 use super::memory::{Memory, MemoryError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,15 +24,21 @@ pub enum ChannelError {
     TransferAlreadyActive,
     NoTransferActive,
     Memory(MemoryError),
+    Diskette(DisketteError),
+    FixedDisk(FixedDiskError),
     ControlStorageOutOfRange { byte_address: usize },
 }
 
 impl fmt::Display for ChannelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TransferAlreadyActive => write!(f, "an I/O cycle-steal transfer is already active"),
+            Self::TransferAlreadyActive => {
+                write!(f, "an I/O cycle-steal transfer is already active")
+            }
             Self::NoTransferActive => write!(f, "no I/O cycle-steal transfer is active"),
             Self::Memory(error) => write!(f, "{error}"),
+            Self::Diskette(error) => write!(f, "{error}"),
+            Self::FixedDisk(error) => write!(f, "{error}"),
             Self::ControlStorageOutOfRange { byte_address } => write!(
                 f,
                 "control-storage byte address {byte_address:#x} is out of range"
@@ -43,6 +51,8 @@ impl Error for ChannelError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Memory(error) => Some(error),
+            Self::Diskette(error) => Some(error),
+            Self::FixedDisk(error) => Some(error),
             _ => None,
         }
     }
@@ -51,6 +61,18 @@ impl Error for ChannelError {
 impl From<MemoryError> for ChannelError {
     fn from(error: MemoryError) -> Self {
         Self::Memory(error)
+    }
+}
+
+impl From<DisketteError> for ChannelError {
+    fn from(error: DisketteError) -> Self {
+        Self::Diskette(error)
+    }
+}
+
+impl From<FixedDiskError> for ChannelError {
+    fn from(error: FixedDiskError) -> Self {
+        Self::FixedDisk(error)
     }
 }
 
@@ -92,14 +114,15 @@ impl IoChannel {
         memory: &mut Memory,
         cp: &mut ControlProcessor,
     ) -> Result<CycleStealProgress, ChannelError> {
-        let transfer = self.pending.as_mut().ok_or(ChannelError::NoTransferActive)?;
+        let transfer = self
+            .pending
+            .as_mut()
+            .ok_or(ChannelError::NoTransferActive)?;
         let total = transfer.bytes.len();
         if transfer.transferred < total {
             let byte = transfer.bytes[transfer.transferred];
             let address = match transfer.target {
-                ChannelTarget::MainStorage { byte_address } => {
-                    byte_address + transfer.transferred
-                }
+                ChannelTarget::MainStorage { byte_address } => byte_address + transfer.transferred,
                 ChannelTarget::ControlStorage { byte_address } => {
                     byte_address + transfer.transferred
                 }
@@ -228,16 +251,10 @@ mod tests {
     fn rejects_second_request_until_the_active_transfer_finishes() {
         let mut channel = IoChannel::default();
         channel
-            .start_cycle_steal(
-                vec![0x77],
-                ChannelTarget::MainStorage { byte_address: 0 },
-            )
+            .start_cycle_steal(vec![0x77], ChannelTarget::MainStorage { byte_address: 0 })
             .unwrap();
         assert_eq!(
-            channel.start_cycle_steal(
-                vec![0x88],
-                ChannelTarget::MainStorage { byte_address: 1 },
-            ),
+            channel.start_cycle_steal(vec![0x88], ChannelTarget::MainStorage { byte_address: 1 },),
             Err(ChannelError::TransferAlreadyActive)
         );
     }
